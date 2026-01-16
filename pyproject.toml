@@ -1,0 +1,18 @@
+[project]
+name = "rlhf-learning-tinyllama"
+version = "0.1.0"
+description = "\"\""
+authors = [
+    {name = "Yuvanesh Sankar"}
+]
+license = {text = "\"\""}
+readme = "README.md"
+requires-python = "^3.10"
+dependencies = [
+    "transformers (>=4.57.5,<5.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
