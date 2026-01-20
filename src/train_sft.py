@@ -12,6 +12,7 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_quant_type="nf4",  #normal float 4 ->datatype like fp4
     bnb_4bit_compute_dtype=torch.float16  #what datatype to use while computation
 )
+
 model=AutoModelForCausalLM.from_pretrained(
     model_name,
     quantization_config=bnb_config,
@@ -70,7 +71,7 @@ trainer = SFTTrainer(
     train_dataset=dataset["train"],
     eval_dataset=dataset["test"],
     peft_config=peft_config,
-    tokenizer=tokenizer,
+    # tokenizer=tokenizer,
     dataset_text_field="text",  # TRL automatically formats Alpaca-style datasets into a text field
 )
 

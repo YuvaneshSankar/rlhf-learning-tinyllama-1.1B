@@ -2,8 +2,9 @@ import torch
 from unsloth import FastLanguageModel
 from datasets import load_dataset
 #we can use unsloth import UnslothSFTTrainer for better integration, but here we use trl's SFTTrainer as an example
-from trl import SFTTrainer
-from transformers import TrainingArguments
+from trl import SFTTrainer, SFTConfig
+# from trl import SFTConfig
+# from unsloth import UnslothSFTTrainer
 
 max_seq=2048
 
@@ -23,7 +24,7 @@ model=FastLanguageModel.get_peft_model(
   lora_alpha=16,
   lora_dropout=0,  # Unsloth recommends 0
   bias="none",
-  task_type="CAUSAL_LM"
+  # task_type="CAUSAL_LM" ->FastLanguageModel.get_peft_model() internally passes task_type="CAUSAL_LM" by default
 )
 
 dataset = load_dataset("tatsu-lab/alpaca", split="train")
@@ -43,26 +44,36 @@ def formatting_prompts_func(examples):
 
 dataset = dataset.map(formatting_prompts_func, batched=True)
 
-trainer= SFTTrainer(
-  model=model,
-  tokenizer=tokenizer,
-  train_dataset=dataset,
-  dataset_text_field="text",
-  max_seq_length=max_seq,
-  packing=True,  # Packs sequences for efficiency
-  args=TrainingArguments(
-    output_dir="./models/sft_unsloth",
-    per_device_train_batch_size=4,
-    gradient_accumulation_steps=4,
-    warmup_steps=10,
-    max_steps=1000, #each step processes one effective batch (per_device_train_batch_size * gradient_accumulation_steps = 4*4=16 samples here). 1000 steps ≈ 1000 forward/backward passes on ~16k samples from Alpaca subset (~52k total train split)
+sft_config = SFTConfig(
+    output_dir="./models/sft",
+    num_train_epochs=1, #so basically lora converges faster so if we have higher epochs then it may overfit
+    per_device_train_batch_size=2,  # Number of samples per GPU step (because of memory constraints)
+    per_device_eval_batch_size=2,    #same idea for eval though
+    gradient_accumulation_steps=4,  #update wights once every 4 forward+backward passes....
+    #so effective batch size=>2*4 = 8
     learning_rate=2e-4,
-    fp16=not torch.cuda.is_bf16_supported(),
-    logging_steps=10,
-    optim="adamw_8bit",
-    seed=3407,
-  ),
+    optim="paged_adamw_8bit",  #This is a memory-optimized optimizer from bitsandbytes
+    logging_steps=10,  #just logs training metrics every 10 steps
+    save_steps=500,  #saves model checkpoint every 500 steps
+    eval_steps=500,  #run evaluation every 500 steps
+    max_seq_length=2048,  # TinyLlama max
+    packing=False,  # This is a TRL-specific optimization....minmizes padding tokens in batches
+    fp16=False,  # Use bfloat16 above
+    bf16=True,
+    # report_to="wandb",  # Optional: wandb login
+    remove_unused_columns=False,
 )
+
+trainer = SFTTrainer(  # Gets auto-patched by Unsloth
+    model=model,
+    tokenizer=tokenizer,
+    train_dataset=dataset,
+    dataset_text_field="text",
+    max_seq_length=max_seq,
+    args=sft_config,
+)
+
+
 
 trainer.train()
 model.save_pretrained("./models/sft_unsloth")
