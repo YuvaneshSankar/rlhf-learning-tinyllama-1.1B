@@ -1,4 +1,3 @@
-import argparse
 import math
 import os
 
@@ -6,7 +5,7 @@ import torch
 from datasets import load_dataset
 from unsloth import FastLanguageModel
 from peft import PeftModel
-from trl import SFTTrainer, SFTConfig
+from transformers import Trainer, TrainingArguments
 
 
 
@@ -42,12 +41,20 @@ def load_model_and_tokenizer(max_seq_length: int, adapter_dir: str):
     return model, tokenizer
 
 
-def build_eval_dataset(eval_samples: int):
+def build_eval_dataset(eval_samples: int, tokenizer):
     dataset = load_dataset("tatsu-lab/alpaca", split="train")
     dataset = dataset.map(formatting_prompts_func, batched=True)
 
     if eval_samples and eval_samples > 0:
         dataset = dataset.shuffle(seed=42).select(range(min(eval_samples, len(dataset))))
+
+    # Tokenize the dataset
+    def tokenize_function(examples):
+        tokenized = tokenizer(examples["text"], truncation=True, padding=True, max_length=2048)
+        tokenized["labels"] = tokenized["input_ids"].copy()
+        return tokenized
+
+    dataset = dataset.map(tokenize_function, batched=True, remove_columns=["instruction", "input", "output", "text"])
     return dataset
 
 
@@ -57,9 +64,9 @@ def evaluate(adapter_dir: str, max_seq_length: int, per_device_eval_batch_size: 
     # Keep the model in eval mode
     model.eval()
 
-    eval_ds = build_eval_dataset(eval_samples)
+    eval_ds = build_eval_dataset(eval_samples, tokenizer)
 
-    sft_cfg = SFTConfig(
+    eval_args = TrainingArguments(
         output_dir="./models/eval_tmp",
         per_device_eval_batch_size=per_device_eval_batch_size,
         remove_unused_columns=False,
@@ -68,16 +75,14 @@ def evaluate(adapter_dir: str, max_seq_length: int, per_device_eval_batch_size: 
         fp16=False,
     )
 
-    trainer = SFTTrainer(
+    trainer = Trainer(
         model=model,
         tokenizer=tokenizer,
-        train_dataset=eval_ds,  # not training; using for tokenizer pipeline
-        dataset_text_field="text",
-        max_seq_length=max_seq_length,
-        args=sft_cfg,
+        eval_dataset=eval_ds,
+        args=eval_args,
     )
 
-    metrics = trainer.evaluate(eval_dataset=eval_ds)
+    metrics = trainer.evaluate()
     eval_loss = float(metrics.get("eval_loss", float("nan")))
     ppl = math.exp(eval_loss) if math.isfinite(eval_loss) else float("nan")
 
@@ -87,32 +92,16 @@ def evaluate(adapter_dir: str, max_seq_length: int, per_device_eval_batch_size: 
     print(f"perplexity: {ppl}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Evaluate a LoRA-adapted TinyLlama (Unsloth) on Alpaca formatting")
-    parser.add_argument(
-        "--adapter_dir",
-        type=str,
-        default="./models/sft_unsloth",
-        help="Path to the saved LoRA adapter directory (contains adapter_model.safetensors)",
-    )
-    parser.add_argument("--max_seq_length", type=int, default=2048, help="Max sequence length for the model")
-    parser.add_argument("--batch_size", type=int, default=2, help="Per-device eval batch size")
-    parser.add_argument(
-        "--eval_samples",
-        type=int,
-        default=512,
-        help="Number of samples from Alpaca train to use for evaluation",
-    )
-
-    args = parser.parse_args()
+if __name__ == "__main__":
+    # Default parameters
+    adapter_dir = "./models/sft_unsloth"
+    max_seq_length = 2048
+    per_device_eval_batch_size = 2
+    eval_samples = 512
 
     evaluate(
-        adapter_dir=args.adapter_dir,
-        max_seq_length=args.max_seq_length,
-        per_device_eval_batch_size=args.batch_size,
-        eval_samples=args.eval_samples,
+        adapter_dir=adapter_dir,
+        max_seq_length=max_seq_length,
+        per_device_eval_batch_size=per_device_eval_batch_size,
+        eval_samples=eval_samples,
     )
-
-
-if __name__ == "__main__":
-    main()
