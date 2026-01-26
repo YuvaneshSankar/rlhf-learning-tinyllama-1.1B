@@ -8,7 +8,6 @@ from peft import PeftModel
 from transformers import Trainer, TrainingArguments
 
 
-
 def formatting_prompts_func(examples):
     instructions = examples["instruction"]
     inputs = examples["input"]
@@ -34,10 +33,16 @@ def load_model_and_tokenizer(max_seq_length: int, adapter_dir: str):
         load_in_4bit=True,
     )
 
-    # Attach LoRA adapter weights
     if not os.path.isdir(adapter_dir):
         raise FileNotFoundError(f"Adapter directory not found: {adapter_dir}")
+
     model = PeftModel.from_pretrained(model, adapter_dir)
+
+    # DEBUG: Check if adapter is loaded
+    print(f"=== Adapter loaded from: {adapter_dir} ===")
+    print(f"Active adapters: {model.active_adapters}")
+    print(f"Is PEFT model: {hasattr(model, 'active_adapters')}")
+
     return model, tokenizer
 
 
@@ -48,13 +53,54 @@ def build_eval_dataset(eval_samples: int, tokenizer):
     if eval_samples and eval_samples > 0:
         dataset = dataset.shuffle(seed=42).select(range(min(eval_samples, len(dataset))))
 
-    # Tokenize the dataset
+    # Tokenize the dataset with proper label masking
     def tokenize_function(examples):
-        tokenized = tokenizer(examples["text"], truncation=True, padding=True, max_length=2048)
-        tokenized["labels"] = tokenized["input_ids"].copy()
+        texts = examples["text"]
+
+        # Tokenize full sequences
+        tokenized = tokenizer(
+            texts,
+            truncation=True,
+            padding=True,
+            max_length=2048,
+            return_tensors=None
+        )
+
+        labels = []
+        for text, input_ids in zip(texts, tokenized["input_ids"]):
+            # Find where the response starts
+            response_marker = "### Response:\n"
+            response_idx = text.find(response_marker)
+
+            if response_idx == -1:
+                # Fallback: if no response marker, use full sequence
+                labels.append(input_ids)
+                continue
+
+            # Tokenize everything up to and including the response marker
+            prompt_text = text[:response_idx + len(response_marker)]
+            prompt_tokens = tokenizer(
+                prompt_text,
+                truncation=True,
+                max_length=2048,
+                add_special_tokens=False
+            )["input_ids"]
+
+            # Create label sequence: -100 for prompt, actual tokens for response
+            label = [-100] * len(prompt_tokens) + input_ids[len(prompt_tokens):]
+
+            # Ensure label length matches input_ids length
+            label = label[:len(input_ids)]
+            labels.append(label)
+
+        tokenized["labels"] = labels
         return tokenized
 
-    dataset = dataset.map(tokenize_function, batched=True, remove_columns=["instruction", "input", "output", "text"])
+    dataset = dataset.map(
+        tokenize_function,
+        batched=True,
+        remove_columns=["instruction", "input", "output", "text"]
+    )
     return dataset
 
 
@@ -94,7 +140,7 @@ def evaluate(adapter_dir: str, max_seq_length: int, per_device_eval_batch_size: 
 
 if __name__ == "__main__":
     # Default parameters
-    adapter_dir = "./models/sft_unsloth"
+    adapter_dir = "./models/sft/checkpoint-6000"
     max_seq_length = 2048
     per_device_eval_batch_size = 2
     eval_samples = 512
