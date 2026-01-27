@@ -76,8 +76,6 @@ def ppo_training():
 
             # Decode responses
             responses_text = [tokenizer.decode(r, skip_special_tokens=True) for r in response_tensors]
-
-            # Get rewards
             rewards = [torch.tensor(get_reward_score(p, r)) for p, r in zip(batch, responses_text)]
 
             # PPO update
